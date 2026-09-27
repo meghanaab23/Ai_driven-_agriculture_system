@@ -1,0 +1,363 @@
+      - name: Fetch official Data.gov.in market data
+        env:
+          DATA_GOV_API_KEY: ${{ secrets.DATA_GOV_API_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          RESOURCE_ID = "9ef84268-d588-465a-a308-a864a43d0070"
+
+          API_URL = (
+              f"https://api.data.gov.in/resource/{RESOURCE_ID}"
+          )
+
+          STATE = "Karnataka"
+
+          PAGE_SIZE = 10000
+
+          MAX_RECORDS = 100000
+
+          # ---------------------------------------------------------
+          # API KEY
+          # ---------------------------------------------------------
+
+          api_key = os.environ.get("DATA_GOV_API_KEY")
+
+          if not api_key:
+              raise RuntimeError(
+                  "DATA_GOV_API_KEY GitHub Secret is missing."
+              )
+
+          api_key = api_key.strip()
+
+          if not api_key:
+              raise RuntimeError(
+                  "DATA_GOV_API_KEY GitHub Secret is empty."
+              )
+
+          # ---------------------------------------------------------
+          # FETCH COMPLETE DATASET
+          # ---------------------------------------------------------
+
+          all_records = []
+
+          offset = 0
+
+          while offset < MAX_RECORDS:
+
+              params = {
+                  "api-key": api_key,
+                  "format": "json",
+                  "limit": PAGE_SIZE,
+                  "offset": offset,
+              }
+
+              url = API_URL + "?" + urlencode(params)
+
+              print("=" * 70)
+              print(
+                  f"Fetching government market data "
+                  f"(offset={offset}, limit={PAGE_SIZE})"
+              )
+              print("=" * 70)
+
+              request = Request(
+                  url,
+                  headers={
+                      "User-Agent":
+                          "AI-Smart-Agriculture/1.0"
+                  },
+              )
+
+              try:
+
+                  with urlopen(
+                      request,
+                      timeout=120
+                  ) as response:
+
+                      raw_data = response.read()
+
+                  data = json.loads(
+                      raw_data.decode("utf-8")
+                  )
+
+              except Exception as error:
+
+                  raise RuntimeError(
+                      "Data.gov.in request failed "
+                      f"at offset {offset}: {error}"
+                  ) from error
+
+              records = data.get(
+                  "records",
+                  []
+              )
+
+              if not isinstance(records, list):
+
+                  raise RuntimeError(
+                      "Invalid records returned by Data.gov.in."
+                  )
+
+              print(
+                  f"Records received: {len(records)}"
+              )
+
+              if not records:
+
+                  print(
+                      "No more records available."
+                  )
+
+                  break
+
+              all_records.extend(
+                  record
+                  for record in records
+                  if isinstance(record, dict)
+              )
+
+              offset += len(records)
+
+              print(
+                  f"Total records fetched so far: "
+                  f"{len(all_records)}"
+              )
+
+              # -----------------------------------------------------
+              # Stop when the API returns a short page
+              # -----------------------------------------------------
+
+              if len(records) < PAGE_SIZE:
+
+                  print(
+                      "Final page reached."
+                  )
+
+                  break
+
+              time.sleep(1)
+
+          # ---------------------------------------------------------
+          # FILTER KARNATAKA LOCALLY
+          # ---------------------------------------------------------
+
+          print("=" * 70)
+          print("Filtering Karnataka records...")
+          print("=" * 70)
+
+          karnataka_records = []
+
+          for record in all_records:
+
+              record_state = str(
+                  record.get("state", "")
+              ).strip().casefold()
+
+              if record_state != STATE.casefold():
+                  continue
+
+              karnataka_records.append({
+                  "state": record.get("state"),
+                  "district": record.get("district"),
+                  "market": record.get("market"),
+                  "commodity": record.get("commodity"),
+                  "variety": record.get("variety"),
+                  "grade": record.get("grade"),
+                  "arrival_date": record.get("arrival_date"),
+                  "min_price": record.get("min_price"),
+                  "max_price": record.get("max_price"),
+                  "modal_price": record.get("modal_price"),
+              })
+
+          # ---------------------------------------------------------
+          # REMOVE DUPLICATES
+          # ---------------------------------------------------------
+
+          unique_records = []
+
+          seen = set()
+
+          for record in karnataka_records:
+
+              key = (
+                  record.get("state"),
+                  record.get("district"),
+                  record.get("market"),
+                  record.get("commodity"),
+                  record.get("variety"),
+                  record.get("grade"),
+                  record.get("arrival_date"),
+                  record.get("min_price"),
+                  record.get("max_price"),
+                  record.get("modal_price"),
+              )
+
+              if key in seen:
+                  continue
+
+              seen.add(key)
+
+              unique_records.append(record)
+
+          # ---------------------------------------------------------
+          # VALIDATE
+          # ---------------------------------------------------------
+
+          if not unique_records:
+
+              raise RuntimeError(
+                  "No Karnataka market records were found "
+                  "in the government dataset."
+              )
+
+          # ---------------------------------------------------------
+          # STATISTICS
+          # ---------------------------------------------------------
+
+          districts = sorted(
+              {
+                  str(record.get("district")).strip()
+                  for record in unique_records
+                  if record.get("district")
+              }
+          )
+
+          markets = sorted(
+              {
+                  str(record.get("market")).strip()
+                  for record in unique_records
+                  if record.get("market")
+              }
+          )
+
+          commodities = sorted(
+              {
+                  str(record.get("commodity")).strip()
+                  for record in unique_records
+                  if record.get("commodity")
+              }
+          )
+
+          # ---------------------------------------------------------
+          # PRINT SUMMARY
+          # ---------------------------------------------------------
+
+          print("=" * 70)
+          print("KARNATAKA MARKET DATA SUMMARY")
+          print("=" * 70)
+
+          print(
+              f"Total API records fetched: "
+              f"{len(all_records)}"
+          )
+
+          print(
+              f"Karnataka records found: "
+              f"{len(karnataka_records)}"
+          )
+
+          print(
+              f"Unique Karnataka records stored: "
+              f"{len(unique_records)}"
+          )
+
+          print(
+              f"Districts found: "
+              f"{len(districts)}"
+          )
+
+          print(
+              f"Markets found: "
+              f"{len(markets)}"
+          )
+
+          print(
+              f"Commodities found: "
+              f"{len(commodities)}"
+          )
+
+          print()
+          print("Districts:")
+
+          for district in districts:
+              print(
+                  f"  - {district}"
+              )
+
+          print()
+          print("Markets:")
+
+          for market in markets:
+              print(
+                  f"  - {market}"
+              )
+
+          print("=" * 70)
+
+          # ---------------------------------------------------------
+          # CREATE CACHE
+          # ---------------------------------------------------------
+
+          cache = {
+              "success": True,
+              "updated_at": datetime.now(
+                  timezone.utc
+              ).isoformat(),
+              "source": "Data.gov.in",
+              "resource_id": RESOURCE_ID,
+              "state": STATE,
+              "total": len(unique_records),
+              "records": unique_records,
+          }
+
+          # ---------------------------------------------------------
+          # SAVE CACHE
+          # ---------------------------------------------------------
+
+          cache_path = Path(
+              "backend/data/market_cache.json"
+          )
+
+          cache_path.parent.mkdir(
+              parents=True,
+              exist_ok=True
+          )
+
+          cache_path.write_text(
+              json.dumps(
+                  cache,
+                  indent=2,
+                  ensure_ascii=False
+              ),
+              encoding="utf-8"
+          )
+
+          print()
+          print(
+              "Karnataka market cache updated successfully."
+          )
+
+          print(
+              f"Records stored: "
+              f"{len(unique_records)}"
+          )
+
+          print(
+              f"Districts: "
+              f"{len(districts)}"
+          )
+
+          print(
+              f"Markets: "
+              f"{len(markets)}"
+          )
+
+          PY

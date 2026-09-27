@@ -1,0 +1,67 @@
+# ==============================
+# PYTHON
+# ==============================
+
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+env/
+
+# ==============================
+# ENVIRONMENT / SECRETS
+# ==============================
+
+.env
+.env.*
+!.env.example
+
+# ==============================
+# NODE / REACT / VITE
+# ==============================
+
+node_modules/
+dist/
+.vite/
+
+# ==============================
+# IDE
+# ==============================
+
+.vscode/
+.idea/
+
+# ==============================
+# LOGS
+# ==============================
+
+*.log
+
+# ==============================
+# OS
+# ==============================
+
+.DS_Store
+Thumbs.db
+
+# ==============================
+# VERCEL
+# ==============================
+
+.vercel/
+
+# ==============================
+# PLANT DISEASE DATASET
+# ==============================
+
+backend/dataset/PlantVillage/
+
+# ==============================
+# LOCAL / LARGE ML DATASETS
+# ==============================
+backend/dataset/DigitalGreen/
+backend/dataset/KoppalChilli/
+backend/test_images/
+backend/chilli_error_inspection_v3/

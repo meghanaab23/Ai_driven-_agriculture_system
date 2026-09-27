@@ -1,0 +1,1053 @@
+import json
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+
+# ============================================================
+# PLANT DISEASE PREDICTION
+# MobileNetV3-Small + ONNX Runtime
+# Real-World Prediction Improvements
+# ============================================================
+
+
+# ============================================================
+# PATHS
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+MODEL_DIR = (
+    BASE_DIR
+    / "app"
+    / "ml_models"
+    / "saved_models"
+)
+
+# Production model is now ONNX.
+MODEL_PATH = (
+    MODEL_DIR
+    / "plant_disease_model.onnx"
+)
+
+METADATA_PATH = (
+    MODEL_DIR
+    / "plant_disease_metadata.json"
+)
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+IMAGE_SIZE = 224
+
+# CPU inference.
+DEVICE = "cpu"
+
+
+# ============================================================
+# PREDICTION THRESHOLDS
+# ============================================================
+
+# Minimum confidence before accepting a prediction normally.
+#
+# This is NOT a guarantee that the prediction is correct.
+# It is simply a safety threshold for uncertain images.
+
+MIN_CONFIDENCE = 55.0
+
+
+# Difference between the best crop probability and the
+# second-best crop probability.
+#
+# If two crops are very close, we treat the prediction
+# as uncertain.
+
+CROP_MARGIN = 15.0
+
+
+# ============================================================
+# LOAD METADATA
+# ============================================================
+
+@lru_cache(maxsize=1)
+def load_metadata():
+
+    if not METADATA_PATH.exists():
+
+        raise FileNotFoundError(
+            f"Disease metadata not found:\n"
+            f"{METADATA_PATH}"
+        )
+
+    with open(
+        METADATA_PATH,
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        metadata = json.load(file)
+
+    return metadata
+
+
+# ============================================================
+# LOAD ONNX MODEL LAZILY
+# ============================================================
+
+@lru_cache(maxsize=1)
+def load_disease_model():
+
+    # IMPORTANT:
+    # ONNX Runtime is imported only when disease prediction
+    # actually requires the model.
+    #
+    # This keeps disease inference dependencies out of
+    # FastAPI startup memory as much as possible.
+
+    import onnxruntime as ort
+
+    if not MODEL_PATH.exists():
+
+        raise FileNotFoundError(
+            f"Disease ONNX model not found:\n"
+            f"{MODEL_PATH}"
+        )
+
+    metadata = load_metadata()
+
+    class_names = (
+        metadata["classes"]
+    )
+
+    session = ort.InferenceSession(
+        str(MODEL_PATH),
+        providers=[
+            "CPUExecutionProvider"
+        ]
+    )
+
+    return (
+        session,
+        class_names
+    )
+
+
+# ============================================================
+# GET CROP FROM CLASS NAME
+# ============================================================
+
+def get_crop_from_class(
+    class_name
+):
+
+    if "___" not in class_name:
+
+        return "Unknown"
+
+    crop = (
+        class_name.split(
+            "___",
+            1
+        )[0]
+    )
+
+    crop = (
+        crop
+        .replace("_", " ")
+        .replace("(", "")
+        .replace(")", "")
+        .replace(",", "")
+    )
+
+    # Normalize PlantVillage crop names.
+
+    if crop.lower() == "corn maize":
+
+        return "Corn"
+
+    if crop.lower() == "pepper bell":
+
+        return "Bell Pepper"
+
+    if crop.lower() == "cherry including sour":
+
+        return "Cherry"
+
+    return crop
+
+
+# ============================================================
+# FORMAT DISEASE NAME
+# ============================================================
+
+def format_disease_name(
+    class_name
+):
+
+    parts = class_name.split(
+        "___",
+        1
+    )
+
+    if len(parts) != 2:
+
+        return class_name
+
+    crop = parts[0]
+
+    disease = parts[1]
+
+    crop = (
+        crop
+        .replace("_", " ")
+    )
+
+    disease = (
+        disease
+        .replace("_", " ")
+    )
+
+    disease = (
+        disease
+        .replace("  ", " ")
+    )
+
+    return (
+        crop,
+        disease
+    )
+
+
+# ============================================================
+# DISEASE INFORMATION
+# ============================================================
+
+DISEASE_INFO = {
+
+    "Apple___Apple_scab": {
+        "crop": "Apple",
+        "disease": "Apple Scab",
+        "treatment": "Remove infected leaves and fruits. Apply an appropriate fungicide according to local agricultural recommendations.",
+        "prevention": "Maintain good orchard sanitation, remove fallen leaves, and improve air circulation."
+    },
+
+    "Apple___Black_rot": {
+        "crop": "Apple",
+        "disease": "Black Rot",
+        "treatment": "Remove infected plant material and prune affected branches. Use recommended fungicide when necessary.",
+        "prevention": "Remove dead wood and infected fruits and maintain proper orchard sanitation."
+    },
+
+    "Apple___Cedar_apple_rust": {
+        "crop": "Apple",
+        "disease": "Cedar Apple Rust",
+        "treatment": "Remove severely affected plant material and use an appropriate fungicide when recommended.",
+        "prevention": "Maintain orchard sanitation and reduce nearby alternate hosts where practical."
+    },
+
+    "Apple___healthy": {
+        "crop": "Apple",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Continue regular monitoring, proper watering, nutrition, and orchard sanitation."
+    },
+
+    "Blueberry___healthy": {
+        "crop": "Blueberry",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, air circulation, and regular monitoring."
+    },
+
+    "Cherry_(including_sour)___Powdery_mildew": {
+        "crop": "Cherry",
+        "disease": "Powdery Mildew",
+        "treatment": "Remove severely affected leaves and improve air circulation. Apply a recommended fungicide if required.",
+        "prevention": "Avoid excessive humidity around foliage and maintain good canopy ventilation."
+    },
+
+    "Cherry_(including_sour)___healthy": {
+        "crop": "Cherry",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Continue regular monitoring and maintain proper irrigation and orchard hygiene."
+    },
+
+    "Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot": {
+        "crop": "Corn",
+        "disease": "Cercospora Leaf Spot / Gray Leaf Spot",
+        "treatment": "Remove heavily infected crop residue where appropriate and use recommended fungicide practices.",
+        "prevention": "Use resistant varieties, crop rotation, and good field sanitation."
+    },
+
+    "Corn_(maize)___Common_rust_": {
+        "crop": "Corn",
+        "disease": "Common Rust",
+        "treatment": "Monitor disease development and use a recommended fungicide when economically justified.",
+        "prevention": "Use resistant varieties and maintain balanced crop nutrition."
+    },
+
+    "Corn_(maize)___Northern_Leaf_Blight": {
+        "crop": "Corn",
+        "disease": "Northern Leaf Blight",
+        "treatment": "Use appropriate fungicide treatment when necessary and manage infected crop residue.",
+        "prevention": "Use resistant hybrids, crop rotation, and field sanitation."
+    },
+
+    "Corn_(maize)___healthy": {
+        "crop": "Corn",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, weed management, and regular crop monitoring."
+    },
+
+    "Grape___Black_rot": {
+        "crop": "Grape",
+        "disease": "Black Rot",
+        "treatment": "Remove infected berries and plant material and apply recommended fungicide treatment.",
+        "prevention": "Maintain canopy airflow, remove infected material, and avoid prolonged leaf wetness."
+    },
+
+    "Grape___Esca_(Black_Measles)": {
+        "crop": "Grape",
+        "disease": "Esca / Black Measles",
+        "treatment": "Remove severely affected vines or infected wood where appropriate and consult local plant disease recommendations.",
+        "prevention": "Use healthy planting material and maintain careful pruning and vineyard sanitation."
+    },
+
+    "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)": {
+        "crop": "Grape",
+        "disease": "Leaf Blight",
+        "treatment": "Remove infected foliage where practical and apply a recommended fungicide.",
+        "prevention": "Improve canopy ventilation and reduce prolonged moisture on leaves."
+    },
+
+    "Grape___healthy": {
+        "crop": "Grape",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, pruning, and vineyard sanitation."
+    },
+
+    "Orange___Haunglongbing_(Citrus_greening)": {
+        "crop": "Orange",
+        "disease": "Huanglongbing / Citrus Greening",
+        "treatment": "There is no simple curative treatment for infected trees. Follow local citrus disease management recommendations and manage the insect vector.",
+        "prevention": "Use certified planting material and monitor and control psyllid vectors."
+    },
+
+    "Peach___Bacterial_spot": {
+        "crop": "Peach",
+        "disease": "Bacterial Spot",
+        "treatment": "Remove severely affected plant material and follow locally recommended bacterial disease management practices.",
+        "prevention": "Use resistant varieties where available and avoid unnecessary leaf wetness."
+    },
+
+    "Peach___healthy": {
+        "crop": "Peach",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, pruning, and orchard sanitation."
+    },
+
+    "Pepper,_bell___Bacterial_spot": {
+        "crop": "Bell Pepper",
+        "disease": "Bacterial Spot",
+        "treatment": "Remove severely infected plant material and follow recommended bacterial disease management practices.",
+        "prevention": "Use disease-free seed, avoid overhead irrigation, and maintain field sanitation."
+    },
+
+    "Pepper,_bell___healthy": {
+        "crop": "Bell Pepper",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain balanced nutrition, appropriate irrigation, and regular crop monitoring."
+    },
+
+    "Potato___Early_blight": {
+        "crop": "Potato",
+        "disease": "Early Blight",
+        "treatment": "Remove infected foliage and use an appropriate fungicide according to local recommendations.",
+        "prevention": "Use crop rotation, proper irrigation, resistant varieties, and remove infected crop residue."
+    },
+
+    "Potato___Late_blight": {
+        "crop": "Potato",
+        "disease": "Late Blight",
+        "treatment": "Remove severely infected material and apply an appropriate fungicide promptly according to local recommendations.",
+        "prevention": "Use disease-free seed, resistant varieties, good field sanitation, and avoid prolonged leaf wetness."
+    },
+
+    "Potato___healthy": {
+        "crop": "Potato",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, crop rotation, and regular monitoring."
+    },
+
+    "Raspberry___healthy": {
+        "crop": "Raspberry",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain good airflow, appropriate irrigation, nutrition, and regular monitoring."
+    },
+
+    "Soybean___healthy": {
+        "crop": "Soybean",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain balanced nutrition, proper irrigation, weed management, and crop monitoring."
+    },
+
+    "Squash___Powdery_mildew": {
+        "crop": "Squash",
+        "disease": "Powdery Mildew",
+        "treatment": "Remove severely affected leaves and use an appropriate fungicide when recommended.",
+        "prevention": "Improve air circulation, avoid excessive humidity, and maintain adequate plant spacing."
+    },
+
+    "Strawberry___Leaf_scorch": {
+        "crop": "Strawberry",
+        "disease": "Leaf Scorch",
+        "treatment": "Remove severely affected leaves and follow recommended disease management practices.",
+        "prevention": "Maintain field sanitation, proper irrigation, and good airflow."
+    },
+
+    "Strawberry___healthy": {
+        "crop": "Strawberry",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Maintain proper irrigation, nutrition, spacing, and regular crop monitoring."
+    },
+
+    "Tomato___Bacterial_spot": {
+        "crop": "Tomato",
+        "disease": "Bacterial Spot",
+        "treatment": "Remove infected plant material and follow locally recommended bacterial disease management practices.",
+        "prevention": "Use disease-free seed, avoid overhead irrigation, and maintain good field sanitation."
+    },
+
+    "Tomato___Early_blight": {
+        "crop": "Tomato",
+        "disease": "Early Blight",
+        "treatment": "Remove affected leaves and use an appropriate fungicide according to local recommendations.",
+        "prevention": "Use crop rotation, proper spacing, mulching, and avoid prolonged leaf wetness."
+    },
+
+    "Tomato___Late_blight": {
+        "crop": "Tomato",
+        "disease": "Late Blight",
+        "treatment": "Remove infected plant material and apply an appropriate fungicide promptly according to local recommendations.",
+        "prevention": "Use disease-free planting material, improve airflow, and reduce prolonged leaf moisture."
+    },
+
+    "Tomato___Leaf_Mold": {
+        "crop": "Tomato",
+        "disease": "Leaf Mold",
+        "treatment": "Remove affected leaves and improve ventilation. Apply recommended fungicide when necessary.",
+        "prevention": "Reduce humidity, improve greenhouse ventilation, and avoid prolonged leaf wetness."
+    },
+
+    "Tomato___Septoria_leaf_spot": {
+        "crop": "Tomato",
+        "disease": "Septoria Leaf Spot",
+        "treatment": "Remove affected leaves and apply an appropriate fungicide when recommended.",
+        "prevention": "Use crop rotation, remove infected residue, and avoid overhead watering."
+    },
+
+    "Tomato___Spider_mites Two-spotted_spider_mite": {
+        "crop": "Tomato",
+        "disease": "Spider Mites",
+        "treatment": "Use appropriate integrated pest management measures and locally recommended miticides when necessary.",
+        "prevention": "Monitor the undersides of leaves, reduce plant stress, and encourage beneficial predators."
+    },
+
+    "Tomato___Target_Spot": {
+        "crop": "Tomato",
+        "disease": "Target Spot",
+        "treatment": "Remove infected leaves and use a recommended fungicide when required.",
+        "prevention": "Maintain good airflow, proper plant spacing, and field sanitation."
+    },
+
+    "Tomato___Tomato_Yellow_Leaf_Curl_Virus": {
+        "crop": "Tomato",
+        "disease": "Tomato Yellow Leaf Curl Virus",
+        "treatment": "Remove severely infected plants and manage whitefly vectors according to local recommendations.",
+        "prevention": "Use resistant varieties, healthy seedlings, insect monitoring, and whitefly management."
+    },
+
+    "Tomato___Tomato_mosaic_virus": {
+        "crop": "Tomato",
+        "disease": "Tomato Mosaic Virus",
+        "treatment": "Remove infected plants and sanitize tools and hands to reduce mechanical transmission.",
+        "prevention": "Use certified disease-free seed and maintain strict sanitation."
+    },
+
+    "Tomato___healthy": {
+        "crop": "Tomato",
+        "disease": "Healthy",
+        "treatment": "No disease treatment is required.",
+        "prevention": "Continue regular monitoring and maintain proper irrigation, nutrition, spacing, and sanitation."
+    }
+
+}
+
+
+# ============================================================
+# BUILD CROP PROBABILITIES
+# ============================================================
+
+def calculate_crop_probabilities(
+    probabilities,
+    class_names
+):
+
+    crop_probabilities = {}
+
+    for index, class_name in enumerate(
+        class_names
+    ):
+
+        crop = get_crop_from_class(
+            class_name
+        )
+
+        probability = (
+            float(probabilities[index])
+            * 100
+        )
+
+        crop_probabilities[crop] = (
+            crop_probabilities.get(
+                crop,
+                0.0
+            )
+            + probability
+        )
+
+    return crop_probabilities
+
+
+# ============================================================
+# GET TOP CROP PROBABILITIES
+# ============================================================
+
+def get_top_crops(
+    crop_probabilities,
+    count=3
+):
+
+    return sorted(
+        crop_probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )[:count]
+
+
+# ============================================================
+# SOFTMAX
+# ============================================================
+
+def softmax(logits):
+
+    logits = np.asarray(
+        logits,
+        dtype=np.float32
+    )
+
+    logits = (
+        logits
+        - np.max(
+            logits,
+            axis=1,
+            keepdims=True
+        )
+    )
+
+    probabilities = np.exp(
+        logits
+    )
+
+    probabilities = (
+        probabilities
+        / np.sum(
+            probabilities,
+            axis=1,
+            keepdims=True
+        )
+    )
+
+    return probabilities
+
+
+# ============================================================
+# IMAGE PREPROCESSING
+# ============================================================
+
+def prepare_image(
+    image
+):
+
+    if not isinstance(
+        image,
+        Image.Image
+    ):
+
+        image = Image.open(
+            image
+        )
+
+    image = image.convert(
+        "RGB"
+    )
+
+    # Same 224x224 input size used by
+    # the original MobileNetV3-Small model.
+
+    image = image.resize(
+        (
+            IMAGE_SIZE,
+            IMAGE_SIZE
+        )
+    )
+
+    # PIL image -> NumPy
+    image_array = np.asarray(
+        image,
+        dtype=np.float32
+    )
+
+    # Scale RGB values from [0,255] to [0,1].
+    image_array = (
+        image_array / 255.0
+    )
+
+    # ImageNet normalization.
+    mean = np.array(
+        [
+            0.485,
+            0.456,
+            0.406
+        ],
+        dtype=np.float32
+    )
+
+    std = np.array(
+        [
+            0.229,
+            0.224,
+            0.225
+        ],
+        dtype=np.float32
+    )
+
+    image_array = (
+        image_array - mean
+    ) / std
+
+    # HWC -> CHW
+    image_array = np.transpose(
+        image_array,
+        (
+            2,
+            0,
+            1
+        )
+    )
+
+    # Add batch dimension.
+    image_array = np.expand_dims(
+        image_array,
+        axis=0
+    )
+
+    return image_array.astype(
+        np.float32
+    )
+
+
+# ============================================================
+# PREDICTION
+# ============================================================
+
+def predict_disease(
+    image
+):
+
+    # ========================================================
+    # LOAD MODEL
+    # ========================================================
+
+    session, class_names = (
+        load_disease_model()
+    )
+
+
+    # ========================================================
+    # PREPARE IMAGE
+    # ========================================================
+
+    input_tensor = prepare_image(
+        image
+    )
+
+
+    # ========================================================
+    # GET ONNX INPUT NAME
+    # ========================================================
+
+    input_name = (
+        session
+        .get_inputs()[0]
+        .name
+    )
+
+
+    # ========================================================
+    # MODEL PREDICTION
+    # ========================================================
+
+    outputs = session.run(
+        None,
+        {
+            input_name:
+                input_tensor
+        }
+    )
+
+    logits = outputs[0]
+
+
+    # ========================================================
+    # SOFTMAX
+    # ========================================================
+
+    probabilities = softmax(
+        logits
+    )[0]
+
+
+    # ========================================================
+    # TOP PREDICTIONS
+    # ========================================================
+
+    top_count = min(
+        5,
+        len(class_names)
+    )
+
+    top_indices = np.argsort(
+        probabilities
+    )[::-1][:top_count]
+
+    top_probabilities = (
+        probabilities[
+            top_indices
+        ]
+    )
+
+
+    # ========================================================
+    # BEST PREDICTION
+    # ========================================================
+
+    class_index = int(
+        top_indices[0]
+    )
+
+    confidence_value = (
+        float(
+            top_probabilities[0]
+        )
+        * 100
+    )
+
+    class_name = (
+        class_names[
+            class_index
+        ]
+    )
+
+
+    # ========================================================
+    # CROP PROBABILITIES
+    # ========================================================
+
+    crop_probabilities = (
+        calculate_crop_probabilities(
+            probabilities,
+            class_names
+        )
+    )
+
+    top_crops = (
+        get_top_crops(
+            crop_probabilities
+        )
+    )
+
+
+    best_crop = (
+        top_crops[0][0]
+        if top_crops
+        else "Unknown"
+    )
+
+    best_crop_probability = (
+        top_crops[0][1]
+        if top_crops
+        else 0.0
+    )
+
+    second_crop_probability = (
+
+        top_crops[1][1]
+
+        if len(top_crops) > 1
+
+        else 0.0
+
+    )
+
+
+    crop_margin = (
+        best_crop_probability
+        - second_crop_probability
+    )
+
+
+    predicted_crop = (
+        get_crop_from_class(
+            class_name
+        )
+    )
+
+
+    # ========================================================
+    # CROP CONSISTENCY CHECK
+    # ========================================================
+    #
+    # If the highest disease class belongs to a crop that
+    # does not match the strongest crop probability, use the
+    # strongest crop as the reliability signal.
+    #
+    # We do NOT invent a disease for that crop.
+    # Instead, we report the prediction as uncertain.
+    # ========================================================
+
+    crop_mismatch = (
+        predicted_crop
+        != best_crop
+    )
+
+
+    # ========================================================
+    # DISEASE INFORMATION
+    # ========================================================
+
+    info = DISEASE_INFO.get(
+        class_name
+    )
+
+
+    if info is None:
+
+        crop_disease = (
+            format_disease_name(
+                class_name
+            )
+        )
+
+        if isinstance(
+            crop_disease,
+            tuple
+        ):
+
+            crop_name, disease_name = (
+                crop_disease
+            )
+
+        else:
+
+            crop_name = (
+                predicted_crop
+            )
+
+            disease_name = (
+                crop_disease
+            )
+
+        info = {
+
+            "crop":
+                crop_name,
+
+            "disease":
+                disease_name,
+
+            "treatment":
+                "Consult a local agricultural expert for appropriate treatment.",
+
+            "prevention":
+                "Maintain crop hygiene and regularly monitor the plant."
+
+        }
+
+
+    # ========================================================
+    # DETERMINE RELIABILITY
+    # ========================================================
+
+    uncertain = False
+
+    uncertainty_reason = ""
+
+
+    if (
+        confidence_value
+        < MIN_CONFIDENCE
+    ):
+
+        uncertain = True
+
+        uncertainty_reason = (
+            "The model confidence is low."
+        )
+
+
+    elif crop_mismatch:
+
+        uncertain = True
+
+        uncertainty_reason = (
+            "The strongest disease prediction "
+            "does not agree with the strongest "
+            "crop-level prediction."
+        )
+
+
+    elif (
+        len(top_crops) > 1
+        and crop_margin < CROP_MARGIN
+    ):
+
+        uncertain = True
+
+        uncertainty_reason = (
+            "The image contains competing "
+            "crop-level predictions."
+        )
+
+
+    # ========================================================
+    # SAFE RESULT
+    # ========================================================
+    #
+    # We preserve the normal API fields so your frontend
+    # continues working.
+    #
+    # When uncertain, we do not falsely claim that a disease
+    # is definitely present.
+    # ========================================================
+
+    metadata = load_metadata()
+
+    if uncertain:
+
+        return {
+
+            "success": True,
+
+            "crop": (
+                best_crop
+                if best_crop != "Unknown"
+                else info["crop"]
+            ),
+
+            "disease":
+                "Uncertain - Please upload a clearer leaf image",
+
+            "confidence":
+                round(
+                    confidence_value,
+                    2
+                ),
+
+            "class_index":
+                class_index,
+
+            "treatment":
+                "The image could not be classified reliably. Please upload a clear image showing most of the leaf, or consult a local agricultural expert.",
+
+            "prevention":
+                "Avoid making treatment decisions from an uncertain AI result. Check the crop and symptoms carefully.",
+
+            "model":
+                "MobileNetV3-Small",
+
+            "model_accuracy":
+                metadata.get(
+                    "validation_accuracy"
+                ),
+
+            "dataset_images_used":
+                metadata.get(
+                    "dataset_images_used"
+                ),
+
+            "total_classes":
+                len(class_names)
+
+        }
+
+
+    # ========================================================
+    # NORMAL RESULT
+    # ========================================================
+
+    return {
+
+        "success": True,
+
+        "crop":
+            info["crop"],
+
+        "disease":
+            info["disease"],
+
+        "confidence":
+            round(
+                confidence_value,
+                2
+            ),
+
+        "class_index":
+            class_index,
+
+        "treatment":
+            info["treatment"],
+
+        "prevention":
+            info["prevention"],
+
+        "model":
+            "MobileNetV3-Small",
+
+        "model_accuracy":
+            metadata.get(
+                "validation_accuracy"
+            ),
+
+        "dataset_images_used":
+            metadata.get(
+                "dataset_images_used"
+            ),
+
+        "total_classes":
+            len(class_names)
+
+    }
